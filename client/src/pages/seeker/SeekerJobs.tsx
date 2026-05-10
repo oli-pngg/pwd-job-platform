@@ -7,14 +7,12 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import {
   Search, MapPin, Building2, Briefcase, Clock, ChevronDown,
   ChevronUp, Star, RefreshCw, Brain, CheckCircle2, XCircle,
-  AlertTriangle, ArrowRight, ArrowLeft, Award, MessageSquare,
-  Send, HelpCircle,
+  AlertTriangle, ArrowRight, ArrowLeft, Award,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -56,22 +54,6 @@ interface JobMatch {
   status: string;
 }
 
-interface JobQuestion {
-  id: number;
-  jobId: number;
-  employerId: number;
-  questionText: string;
-  questionType: string; // 'text' | 'yes_no' | 'multiple'
-  options: string[];
-  isRequired: boolean;
-  orderIndex: number;
-}
-
-interface JobAnswer {
-  questionId: number;
-  answerText: string;
-}
-
 const typeLabels: Record<string, string> = {
   full_time: "Full-time",
   part_time: "Part-time",
@@ -107,317 +89,6 @@ function ModalShell({
         {children}
       </div>
     </div>
-  );
-}
-
-// ─── Employer Questions Modal ─────────────────────────────────────────────────
-// Shown to PWD seekers when they click "Answer Questions" on a job card.
-
-interface QuestionsModalProps {
-  job: Job;
-  userId: number;
-  onClose: () => void;
-}
-
-function QuestionsModal({ job, userId, onClose }: QuestionsModalProps) {
-  const { toast } = useToast();
-  const [answers, setAnswers] = useState<Record<number, string>>({});
-  const [submitted, setSubmitted] = useState(false);
-
-  // Fetch employer's questions for this job
-  const { data: questions, isLoading: questionsLoading } = useQuery<JobQuestion[]>({
-    queryKey: ["/api/jobs", job.id, "questions"],
-    queryFn: async () => {
-      const res = await apiRequest("GET", `/api/jobs/${job.id}/questions`);
-      if (!res.ok) throw new Error("Failed to load questions");
-      return res.json();
-    },
-  });
-
-  // Pre-fill previously saved answers if seeker already answered
-  const { data: savedAnswers, isLoading: answersLoading } = useQuery<JobAnswer[]>({
-    queryKey: ["/api/jobs", job.id, "answers", userId],
-    queryFn: async () => {
-      const res = await apiRequest("GET", `/api/jobs/${job.id}/answers/${userId}`);
-      if (!res.ok) return [];
-      return res.json();
-    },
-    enabled: !!userId,
-  });
-
-  // Pre-fill form when saved answers load
-  useEffect(() => {
-    if (savedAnswers && savedAnswers.length > 0) {
-      const prefilled: Record<number, string> = {};
-      savedAnswers.forEach((a) => { prefilled[a.questionId] = a.answerText; });
-      setAnswers(prefilled);
-      setSubmitted(true); // show as already submitted
-    }
-  }, [savedAnswers]);
-
-  const submitMutation = useMutation({
-    mutationFn: async () => {
-      const answersArray = Object.entries(answers).map(([questionId, answerText]) => ({
-        questionId: Number(questionId),
-        answerText,
-      }));
-      const res = await apiRequest("POST", `/api/jobs/${job.id}/answers`, {
-        seekerId: userId,
-        answers: answersArray,
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || "Submission failed");
-      }
-      return res.json();
-    },
-    onSuccess: () => {
-      setSubmitted(true);
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", job.id, "answers", userId] });
-      toast({
-        title: "Answers submitted!",
-        description: "The employer can now review your responses.",
-      });
-    },
-    onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
-    },
-  });
-
-  const handleChange = (questionId: number, value: string) => {
-    setAnswers((prev) => ({ ...prev, [questionId]: value }));
-  };
-
-  const getMissingRequired = () => {
-    if (!questions) return [];
-    return questions.filter((q) => q.isRequired && !answers[q.id]?.trim());
-  };
-
-  const canSubmit = getMissingRequired().length === 0 && Object.keys(answers).length > 0;
-
-  // ── Loading ──
-  if (questionsLoading || answersLoading) {
-    return (
-      <ModalShell onClose={onClose} ariaLabel="Employer Questions">
-        <div className="space-y-3 py-4">
-          <Skeleton className="h-5 w-2/3" />
-          <Skeleton className="h-4 w-full" />
-          <Skeleton className="h-16 w-full" />
-          <Skeleton className="h-16 w-full" />
-        </div>
-      </ModalShell>
-    );
-  }
-
-  // ── No questions ──
-  if (!questions || questions.length === 0) {
-    return (
-      <ModalShell onClose={onClose} ariaLabel="Employer Questions">
-        <div className="text-center py-8 space-y-3">
-          <HelpCircle className="w-12 h-12 text-muted-foreground/40 mx-auto" aria-hidden="true" />
-          <p className="font-medium text-foreground">No questions yet</p>
-          <p className="text-sm text-muted-foreground">The employer hasn't added any screening questions for this job.</p>
-          <Button variant="outline" size="sm" onClick={onClose}>Close</Button>
-        </div>
-      </ModalShell>
-    );
-  }
-
-  // ── Submitted confirmation ──
-  if (submitted && !submitMutation.isPending) {
-    return (
-      <ModalShell onClose={onClose} ariaLabel="Answers Submitted">
-        <div className="space-y-4">
-          {/* Header */}
-          <div className="flex items-center gap-2 mb-2">
-            <div className="w-8 h-8 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center flex-shrink-0">
-              <CheckCircle2 size={16} className="text-green-600 dark:text-green-400" aria-hidden="true" />
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground uppercase tracking-wide font-medium">Answers Submitted</p>
-              <h3 className="text-sm font-semibold text-foreground">{job.title}</h3>
-            </div>
-          </div>
-
-          {/* Review submitted answers */}
-          <div className="space-y-3">
-            {questions.map((q, idx) => (
-              <div key={q.id} className="bg-muted/30 rounded-xl p-3 space-y-1">
-                <p className="text-xs font-semibold text-foreground">
-                  Q{idx + 1}. {q.questionText}
-                  {q.isRequired && <span className="text-red-500 ml-1" aria-label="required">*</span>}
-                </p>
-                <p className="text-sm text-muted-foreground pl-1">
-                  {answers[q.id] || <span className="italic text-muted-foreground/50">Not answered</span>}
-                </p>
-              </div>
-            ))}
-          </div>
-
-          <div className="flex gap-2 pt-2">
-            <Button
-              variant="outline"
-              size="sm"
-              className="flex-1"
-              onClick={() => setSubmitted(false)}
-              aria-label="Edit your answers"
-            >
-              Edit Answers
-            </Button>
-            <Button size="sm" className="flex-1" onClick={onClose}>
-              Done
-            </Button>
-          </div>
-        </div>
-      </ModalShell>
-    );
-  }
-
-  // ── Answer Form ──
-  return (
-    <ModalShell onClose={onClose} ariaLabel={`Answer questions for ${job.title}`}>
-      {/* Header */}
-      <div className="flex items-center gap-2 mb-5">
-        <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
-          <MessageSquare size={15} className="text-primary" aria-hidden="true" />
-        </div>
-        <div>
-          <p className="text-xs text-muted-foreground uppercase tracking-wide font-medium flex items-center gap-1">
-            <HelpCircle size={10} aria-hidden="true" /> Employer Questions
-          </p>
-          <h3 className="text-sm font-semibold text-foreground">{job.title} · {job.company}</h3>
-        </div>
-      </div>
-
-      <p className="text-xs text-muted-foreground mb-4">
-        Please answer the following questions from the employer.
-        Fields marked with <span className="text-red-500 font-bold">*</span> are required.
-      </p>
-
-      {/* Questions */}
-      <div className="space-y-5" role="form" aria-label="Employer screening questions">
-        {questions
-          .sort((a, b) => a.orderIndex - b.orderIndex)
-          .map((q, idx) => (
-            <div key={q.id} className="space-y-2">
-              <label
-                htmlFor={`question-${q.id}`}
-                className="block text-sm font-medium text-foreground"
-              >
-                {idx + 1}. {q.questionText}
-                {q.isRequired && (
-                  <span className="text-red-500 ml-1" aria-label="required field">*</span>
-                )}
-              </label>
-
-              {/* Text answer */}
-              {q.questionType === "text" && (
-                <Textarea
-                  id={`question-${q.id}`}
-                  value={answers[q.id] || ""}
-                  onChange={(e) => handleChange(q.id, e.target.value)}
-                  placeholder="Type your answer here..."
-                  className="resize-none min-h-[80px] text-sm"
-                  aria-required={q.isRequired}
-                  data-testid={`answer-text-${q.id}`}
-                />
-              )}
-
-              {/* Yes / No */}
-              {q.questionType === "yes_no" && (
-                <div
-                  className="flex gap-2"
-                  role="radiogroup"
-                  aria-labelledby={`question-${q.id}`}
-                  aria-required={q.isRequired}
-                >
-                  {["Yes", "No"].map((opt) => (
-                    <button
-                      key={opt}
-                      type="button"
-                      role="radio"
-                      aria-checked={answers[q.id] === opt}
-                      onClick={() => handleChange(q.id, opt)}
-                      className={`flex-1 py-2.5 rounded-xl border text-sm font-medium transition-all ${
-                        answers[q.id] === opt
-                          ? "border-primary bg-primary/10 text-primary"
-                          : "border-border bg-background text-foreground hover:border-primary/40 hover:bg-muted/40"
-                      }`}
-                      data-testid={`answer-yesno-${q.id}-${opt.toLowerCase()}`}
-                    >
-                      {opt}
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {/* Multiple choice */}
-              {q.questionType === "multiple" && q.options.length > 0 && (
-                <div
-                  className="space-y-2"
-                  role="radiogroup"
-                  aria-labelledby={`question-${q.id}`}
-                  aria-required={q.isRequired}
-                >
-                  {q.options.map((opt, oi) => (
-                    <button
-                      key={oi}
-                      type="button"
-                      role="radio"
-                      aria-checked={answers[q.id] === opt}
-                      onClick={() => handleChange(q.id, opt)}
-                      className={`w-full text-left px-4 py-3 rounded-xl border text-sm transition-all ${
-                        answers[q.id] === opt
-                          ? "border-primary bg-primary/10 text-primary font-medium"
-                          : "border-border bg-background text-foreground hover:border-primary/40 hover:bg-muted/40"
-                      }`}
-                      data-testid={`answer-multi-${q.id}-${oi}`}
-                    >
-                      <span className="font-semibold mr-2 text-xs text-muted-foreground">
-                        {String.fromCharCode(65 + oi)}.
-                      </span>
-                      {opt}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
-      </div>
-
-      {/* Required warning */}
-      {getMissingRequired().length > 0 && Object.keys(answers).length > 0 && (
-        <p
-          className="mt-4 text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1.5"
-          role="alert"
-        >
-          <AlertTriangle size={12} aria-hidden="true" />
-          Please answer {getMissingRequired().length} required question(s) before submitting.
-        </p>
-      )}
-
-      {/* Actions */}
-      <div className="flex gap-2 mt-6">
-        <Button variant="outline" size="sm" className="flex-1" onClick={onClose} aria-label="Cancel">
-          Cancel
-        </Button>
-        <Button
-          size="sm"
-          className="flex-1 gap-1.5"
-          onClick={() => submitMutation.mutate()}
-          disabled={!canSubmit || submitMutation.isPending}
-          aria-label="Submit your answers"
-          data-testid="button-submit-answers"
-        >
-          {submitMutation.isPending ? (
-            <span className="animate-spin rounded-full h-3 w-3 border-2 border-current border-t-transparent" aria-hidden="true" />
-          ) : (
-            <Send size={13} aria-hidden="true" />
-          )}
-          Submit Answers
-        </Button>
-      </div>
-    </ModalShell>
   );
 }
 
@@ -498,7 +169,7 @@ function AssessmentModal({ job, userId, onClose, onPassed }: AssessmentModalProp
 
   if (assessmentData?.alreadyTaken) {
     return (
-      <ModalShell onClose={onClose} ariaLabel="Assessment Result">
+      <ModalShell onClose={onClose} ariaLabel="Skill Assessment Result">
         <div className="text-center space-y-4 py-4">
           <div className={`w-16 h-16 rounded-full mx-auto flex items-center justify-center ${assessmentData.passed ? "bg-green-100 dark:bg-green-900/30" : "bg-red-100 dark:bg-red-900/30"}`}>
             {assessmentData.passed ? <Award size={32} className="text-green-600 dark:text-green-400" /> : <XCircle size={32} className="text-red-600 dark:text-red-400" />}
@@ -526,7 +197,7 @@ function AssessmentModal({ job, userId, onClose, onPassed }: AssessmentModalProp
 
   if (submitted && result) {
     return (
-      <ModalShell onClose={onClose} ariaLabel="Assessment Result">
+      <ModalShell onClose={onClose} ariaLabel="Skill Assessment Result">
         <div className="text-center space-y-4 py-4">
           <div className={`w-16 h-16 rounded-full mx-auto flex items-center justify-center ${result.passed ? "bg-green-100 dark:bg-green-900/30" : "bg-red-100 dark:bg-red-900/30"}`}>
             {result.passed ? <Award size={32} className="text-green-600 dark:text-green-400" /> : <XCircle size={32} className="text-red-600 dark:text-red-400" />}
@@ -637,7 +308,6 @@ export default function SeekerJobs() {
   const [typeFilter, setTypeFilter] = useState("");
   const [expandedJobId, setExpandedJobId] = useState<number | null>(null);
   const [assessmentJobId, setAssessmentJobId] = useState<number | null>(null);
-  const [questionsJobId, setQuestionsJobId] = useState<number | null>(null);
 
   const { data: jobs, isLoading: jobsLoading } = useQuery<Job[]>({
     queryKey: ["/api/jobs"],
@@ -695,7 +365,6 @@ export default function SeekerJobs() {
   });
 
   const assessmentJob = assessmentJobId !== null ? (jobs || []).find((j) => j.id === assessmentJobId) ?? null : null;
-  const questionsJob = questionsJobId !== null ? (jobs || []).find((j) => j.id === questionsJobId) ?? null : null;
 
   const handleExpressInterest = (job: Job, match: JobMatch) => {
     if (job.hasAssessment) {
@@ -723,15 +392,6 @@ export default function SeekerJobs() {
             if (match) handleAssessmentPassed(match);
             else setAssessmentJobId(null);
           }}
-        />
-      )}
-
-      {/* Employer Questions Modal */}
-      {questionsJob && user && (
-        <QuestionsModal
-          job={questionsJob}
-          userId={user.id}
-          onClose={() => setQuestionsJobId(null)}
         />
       )}
 
@@ -840,18 +500,20 @@ export default function SeekerJobs() {
                         </div>
 
                         <div className="flex gap-2 flex-shrink-0 flex-wrap">
-                          {/* Answer Questions button — always visible to seekers */}
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-8 text-xs gap-1.5 border-primary/30 text-primary hover:bg-primary/5"
-                            onClick={() => setQuestionsJobId(job.id)}
-                            aria-label={`Answer employer questions for ${job.title}`}
-                            data-testid={`button-view-questions-${job.id}`}
-                          >
-                            <MessageSquare size={12} aria-hidden="true" />
-                            Questions
-                          </Button>
+                          {/* Skill Assessment button — only shown if job has an assessment */}
+                          {job.hasAssessment && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-8 text-xs gap-1.5 border-violet-400/50 text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/20"
+                              onClick={() => setAssessmentJobId(job.id)}
+                              aria-label={`Take skill assessment for ${job.title}`}
+                              data-testid={`button-view-questions-${job.id}`}
+                            >
+                              <Brain size={12} aria-hidden="true" />
+                              Skill Assessment
+                            </Button>
+                          )}
 
                           {match ? (
                             match.status === "accepted" ? (
@@ -865,8 +527,7 @@ export default function SeekerJobs() {
                                 data-testid={`button-express-interest-${job.id}`}
                                 aria-label={job.hasAssessment ? `Take assessment for ${job.title}` : `Express interest in ${job.title}`}
                               >
-                                {job.hasAssessment && <Brain size={12} aria-hidden="true" />}
-                                {job.hasAssessment ? "Take Assessment" : "Express Interest"}
+                                {job.hasAssessment ? "Express Interest" : "Express Interest"}
                               </Button>
                             )
                           ) : (
@@ -909,35 +570,27 @@ export default function SeekerJobs() {
                         <h4 className="text-sm font-semibold text-foreground mb-2">Job Description</h4>
                         <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-wrap">{job.description}</p>
 
-                        {/* Questions callout in expanded view */}
-                        <div className="mt-4 bg-primary/5 border border-primary/20 rounded-xl p-3">
-                          <p className="text-xs font-semibold text-primary flex items-center gap-1.5 mb-1">
-                            <MessageSquare size={12} aria-hidden="true" /> Employer Questions
-                          </p>
-                          <p className="text-xs text-muted-foreground mb-2">
-                            The employer may have screening questions for this position. Click to view and answer them.
-                          </p>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="text-xs h-7 gap-1.5 border-primary/30 text-primary hover:bg-primary/5"
-                            onClick={() => setQuestionsJobId(job.id)}
-                            aria-label={`Answer employer questions for ${job.title}`}
-                          >
-                            <MessageSquare size={11} aria-hidden="true" /> View & Answer Questions
-                          </Button>
-                        </div>
-
+                        {/* Skill Assessment callout in expanded view */}
                         {job.hasAssessment && (
-                          <div className="mt-3 bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-800 rounded-xl p-3">
+                          <div className="mt-4 bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-800 rounded-xl p-3">
                             <p className="text-xs font-semibold text-violet-700 dark:text-violet-400 flex items-center gap-1.5 mb-1">
                               <Brain size={12} aria-hidden="true" /> Skill Assessment Required
                             </p>
-                            <p className="text-xs text-violet-600 dark:text-violet-400/80">
-                              The employer requires you to complete a skill assessment quiz before expressing interest. You can only take it once.
+                            <p className="text-xs text-violet-600 dark:text-violet-400/80 mb-2">
+                              This job requires a skill assessment before expressing interest. You can only take it once.
                             </p>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="text-xs h-7 gap-1.5 border-violet-400/50 text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/20"
+                              onClick={() => setAssessmentJobId(job.id)}
+                              aria-label={`Take skill assessment for ${job.title}`}
+                            >
+                              <Brain size={11} aria-hidden="true" /> Take Skill Assessment
+                            </Button>
                           </div>
                         )}
+
                         {match && match.matchedSkills.length > 0 && (
                           <div className="mt-4">
                             <h4 className="text-sm font-semibold text-foreground mb-2">Your Matched Skills ({match.matchedSkills.length}/{job.requiredSkills.length})</h4>
