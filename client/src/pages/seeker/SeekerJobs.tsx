@@ -167,6 +167,20 @@ function AssessmentModal({ job, userId, onClose, onPassed }: AssessmentModalProp
     setAnswers(updated);
   };
 
+  // ── No assessment uploaded ──
+  if (!isLoading && assessmentData && !assessmentData.questions?.length && !assessmentData.alreadyTaken) {
+    return (
+      <ModalShell onClose={onClose} ariaLabel="Skill Assessment">
+        <div className="text-center py-8 space-y-3">
+          <Brain className="w-12 h-12 text-muted-foreground/40 mx-auto" aria-hidden="true" />
+          <p className="font-medium text-foreground">No assessment available</p>
+          <p className="text-sm text-muted-foreground">The employer hasn't uploaded a skill assessment for this job yet.</p>
+          <Button variant="outline" size="sm" onClick={onClose}>Close</Button>
+        </div>
+      </ModalShell>
+    );
+  }
+
   if (assessmentData?.alreadyTaken) {
     return (
       <ModalShell onClose={onClose} ariaLabel="Skill Assessment Result">
@@ -500,20 +514,18 @@ export default function SeekerJobs() {
                         </div>
 
                         <div className="flex gap-2 flex-shrink-0 flex-wrap">
-                          {/* Skill Assessment button — only shown if job has an assessment */}
-                          {job.hasAssessment && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="h-8 text-xs gap-1.5 border-violet-400/50 text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/20"
-                              onClick={() => setAssessmentJobId(job.id)}
-                              aria-label={`Take skill assessment for ${job.title}`}
-                              data-testid={`button-view-questions-${job.id}`}
-                            >
-                              <Brain size={12} aria-hidden="true" />
-                              Skill Assessment
-                            </Button>
-                          )}
+                          {/* Take Assessment button — always visible on every job card */}
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-8 text-xs gap-1.5 border-violet-400/50 text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/20"
+                            onClick={() => setAssessmentJobId(job.id)}
+                            aria-label={`Take skill assessment for ${job.title}`}
+                            data-testid={`button-take-assessment-${job.id}`}
+                          >
+                            <Brain size={12} aria-hidden="true" />
+                            Take Assessment
+                          </Button>
 
                           {match ? (
                             match.status === "accepted" ? (
@@ -525,9 +537,9 @@ export default function SeekerJobs() {
                                 onClick={() => handleExpressInterest(job, match)}
                                 disabled={expressInterestMutation.isPending}
                                 data-testid={`button-express-interest-${job.id}`}
-                                aria-label={job.hasAssessment ? `Take assessment for ${job.title}` : `Express interest in ${job.title}`}
+                                aria-label={`Express interest in ${job.title}`}
                               >
-                                {job.hasAssessment ? "Express Interest" : "Express Interest"}
+                                Express Interest
                               </Button>
                             )
                           ) : (
@@ -570,26 +582,29 @@ export default function SeekerJobs() {
                         <h4 className="text-sm font-semibold text-foreground mb-2">Job Description</h4>
                         <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-wrap">{job.description}</p>
 
-                        {/* Skill Assessment callout in expanded view */}
-                        {job.hasAssessment && (
-                          <div className="mt-4 bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-800 rounded-xl p-3">
-                            <p className="text-xs font-semibold text-violet-700 dark:text-violet-400 flex items-center gap-1.5 mb-1">
-                              <Brain size={12} aria-hidden="true" /> Skill Assessment Required
-                            </p>
-                            <p className="text-xs text-violet-600 dark:text-violet-400/80 mb-2">
-                              This job requires a skill assessment before expressing interest. You can only take it once.
-                            </p>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="text-xs h-7 gap-1.5 border-violet-400/50 text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/20"
-                              onClick={() => setAssessmentJobId(job.id)}
-                              aria-label={`Take skill assessment for ${job.title}`}
-                            >
-                              <Brain size={11} aria-hidden="true" /> Take Skill Assessment
-                            </Button>
-                          </div>
-                        )}
+                        {/* Skill Assessment callout in expanded view — always shown */}
+                        <div className="mt-4 bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-800 rounded-xl p-3">
+                          <p className="text-xs font-semibold text-violet-700 dark:text-violet-400 flex items-center gap-1.5 mb-1">
+                            <Brain size={12} aria-hidden="true" /> Skill Assessment
+                            {job.hasAssessment && (
+                              <span className="ml-1 px-1.5 py-0.5 rounded text-[10px] bg-violet-200 dark:bg-violet-800 text-violet-800 dark:text-violet-200">Required</span>
+                            )}
+                          </p>
+                          <p className="text-xs text-violet-600 dark:text-violet-400/80 mb-2">
+                            {job.hasAssessment
+                              ? "This job requires a skill assessment before expressing interest. You can only take it once."
+                              : "Take a skill assessment to showcase your abilities to the employer."}
+                          </p>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="text-xs h-7 gap-1.5 border-violet-400/50 text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/20"
+                            onClick={() => setAssessmentJobId(job.id)}
+                            aria-label={`Take skill assessment for ${job.title}`}
+                          >
+                            <Brain size={11} aria-hidden="true" /> Take Skill Assessment
+                          </Button>
+                        </div>
 
                         {match && match.matchedSkills.length > 0 && (
                           <div className="mt-4">
