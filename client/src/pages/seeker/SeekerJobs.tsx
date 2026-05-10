@@ -7,13 +7,17 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import {
   Search, MapPin, Building2, Briefcase, Clock, ChevronDown,
   ChevronUp, Star, RefreshCw, Brain, CheckCircle2, XCircle,
-  AlertTriangle, ArrowRight, ArrowLeft, Award,
+  AlertTriangle, ArrowRight, ArrowLeft, Award, MessageSquare,
+  Send, HelpCircle,
 } from "lucide-react";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface AssessmentQuestion {
   question: string;
@@ -25,7 +29,6 @@ interface JobAssessmentData {
   timer: number;
   passingScore: number;
   questions?: AssessmentQuestion[];
-  // if alreadyTaken:
   score?: number;
   passed?: boolean;
   totalQuestions?: number;
@@ -53,6 +56,22 @@ interface JobMatch {
   status: string;
 }
 
+interface JobQuestion {
+  id: number;
+  jobId: number;
+  employerId: number;
+  questionText: string;
+  questionType: string; // 'text' | 'yes_no' | 'multiple'
+  options: string[];
+  isRequired: boolean;
+  orderIndex: number;
+}
+
+interface JobAnswer {
+  questionId: number;
+  answerText: string;
+}
+
 const typeLabels: Record<string, string> = {
   full_time: "Full-time",
   part_time: "Part-time",
@@ -64,6 +83,343 @@ const typeColors: Record<string, string> = {
   part_time: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400",
   freelance: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
 };
+
+// ─── ModalShell ───────────────────────────────────────────────────────────────
+
+function ModalShell({
+  children,
+  onClose,
+  ariaLabel = "Dialog",
+}: {
+  children: React.ReactNode;
+  onClose: () => void;
+  ariaLabel?: string;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
+      role="dialog"
+      aria-modal="true"
+      aria-label={ariaLabel}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="bg-card border border-border rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-6">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ─── Employer Questions Modal ─────────────────────────────────────────────────
+// Shown to PWD seekers when they click "Answer Questions" on a job card.
+
+interface QuestionsModalProps {
+  job: Job;
+  userId: number;
+  onClose: () => void;
+}
+
+function QuestionsModal({ job, userId, onClose }: QuestionsModalProps) {
+  const { toast } = useToast();
+  const [answers, setAnswers] = useState<Record<number, string>>({});
+  const [submitted, setSubmitted] = useState(false);
+
+  // Fetch employer's questions for this job
+  const { data: questions, isLoading: questionsLoading } = useQuery<JobQuestion[]>({
+    queryKey: ["/api/jobs", job.id, "questions"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/jobs/${job.id}/questions`);
+      if (!res.ok) throw new Error("Failed to load questions");
+      return res.json();
+    },
+  });
+
+  // Pre-fill previously saved answers if seeker already answered
+  const { data: savedAnswers, isLoading: answersLoading } = useQuery<JobAnswer[]>({
+    queryKey: ["/api/jobs", job.id, "answers", userId],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/jobs/${job.id}/answers/${userId}`);
+      if (!res.ok) return [];
+      return res.json();
+    },
+    enabled: !!userId,
+  });
+
+  // Pre-fill form when saved answers load
+  useEffect(() => {
+    if (savedAnswers && savedAnswers.length > 0) {
+      const prefilled: Record<number, string> = {};
+      savedAnswers.forEach((a) => { prefilled[a.questionId] = a.answerText; });
+      setAnswers(prefilled);
+      setSubmitted(true); // show as already submitted
+    }
+  }, [savedAnswers]);
+
+  const submitMutation = useMutation({
+    mutationFn: async () => {
+      const answersArray = Object.entries(answers).map(([questionId, answerText]) => ({
+        questionId: Number(questionId),
+        answerText,
+      }));
+      const res = await apiRequest("POST", `/api/jobs/${job.id}/answers`, {
+        seekerId: userId,
+        answers: answersArray,
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Submission failed");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      setSubmitted(true);
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", job.id, "answers", userId] });
+      toast({
+        title: "Answers submitted!",
+        description: "The employer can now review your responses.",
+      });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const handleChange = (questionId: number, value: string) => {
+    setAnswers((prev) => ({ ...prev, [questionId]: value }));
+  };
+
+  const getMissingRequired = () => {
+    if (!questions) return [];
+    return questions.filter((q) => q.isRequired && !answers[q.id]?.trim());
+  };
+
+  const canSubmit = getMissingRequired().length === 0 && Object.keys(answers).length > 0;
+
+  // ── Loading ──
+  if (questionsLoading || answersLoading) {
+    return (
+      <ModalShell onClose={onClose} ariaLabel="Employer Questions">
+        <div className="space-y-3 py-4">
+          <Skeleton className="h-5 w-2/3" />
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-16 w-full" />
+          <Skeleton className="h-16 w-full" />
+        </div>
+      </ModalShell>
+    );
+  }
+
+  // ── No questions ──
+  if (!questions || questions.length === 0) {
+    return (
+      <ModalShell onClose={onClose} ariaLabel="Employer Questions">
+        <div className="text-center py-8 space-y-3">
+          <HelpCircle className="w-12 h-12 text-muted-foreground/40 mx-auto" aria-hidden="true" />
+          <p className="font-medium text-foreground">No questions yet</p>
+          <p className="text-sm text-muted-foreground">The employer hasn't added any screening questions for this job.</p>
+          <Button variant="outline" size="sm" onClick={onClose}>Close</Button>
+        </div>
+      </ModalShell>
+    );
+  }
+
+  // ── Submitted confirmation ──
+  if (submitted && !submitMutation.isPending) {
+    return (
+      <ModalShell onClose={onClose} ariaLabel="Answers Submitted">
+        <div className="space-y-4">
+          {/* Header */}
+          <div className="flex items-center gap-2 mb-2">
+            <div className="w-8 h-8 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center flex-shrink-0">
+              <CheckCircle2 size={16} className="text-green-600 dark:text-green-400" aria-hidden="true" />
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground uppercase tracking-wide font-medium">Answers Submitted</p>
+              <h3 className="text-sm font-semibold text-foreground">{job.title}</h3>
+            </div>
+          </div>
+
+          {/* Review submitted answers */}
+          <div className="space-y-3">
+            {questions.map((q, idx) => (
+              <div key={q.id} className="bg-muted/30 rounded-xl p-3 space-y-1">
+                <p className="text-xs font-semibold text-foreground">
+                  Q{idx + 1}. {q.questionText}
+                  {q.isRequired && <span className="text-red-500 ml-1" aria-label="required">*</span>}
+                </p>
+                <p className="text-sm text-muted-foreground pl-1">
+                  {answers[q.id] || <span className="italic text-muted-foreground/50">Not answered</span>}
+                </p>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex gap-2 pt-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="flex-1"
+              onClick={() => setSubmitted(false)}
+              aria-label="Edit your answers"
+            >
+              Edit Answers
+            </Button>
+            <Button size="sm" className="flex-1" onClick={onClose}>
+              Done
+            </Button>
+          </div>
+        </div>
+      </ModalShell>
+    );
+  }
+
+  // ── Answer Form ──
+  return (
+    <ModalShell onClose={onClose} ariaLabel={`Answer questions for ${job.title}`}>
+      {/* Header */}
+      <div className="flex items-center gap-2 mb-5">
+        <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
+          <MessageSquare size={15} className="text-primary" aria-hidden="true" />
+        </div>
+        <div>
+          <p className="text-xs text-muted-foreground uppercase tracking-wide font-medium flex items-center gap-1">
+            <HelpCircle size={10} aria-hidden="true" /> Employer Questions
+          </p>
+          <h3 className="text-sm font-semibold text-foreground">{job.title} · {job.company}</h3>
+        </div>
+      </div>
+
+      <p className="text-xs text-muted-foreground mb-4">
+        Please answer the following questions from the employer.
+        Fields marked with <span className="text-red-500 font-bold">*</span> are required.
+      </p>
+
+      {/* Questions */}
+      <div className="space-y-5" role="form" aria-label="Employer screening questions">
+        {questions
+          .sort((a, b) => a.orderIndex - b.orderIndex)
+          .map((q, idx) => (
+            <div key={q.id} className="space-y-2">
+              <label
+                htmlFor={`question-${q.id}`}
+                className="block text-sm font-medium text-foreground"
+              >
+                {idx + 1}. {q.questionText}
+                {q.isRequired && (
+                  <span className="text-red-500 ml-1" aria-label="required field">*</span>
+                )}
+              </label>
+
+              {/* Text answer */}
+              {q.questionType === "text" && (
+                <Textarea
+                  id={`question-${q.id}`}
+                  value={answers[q.id] || ""}
+                  onChange={(e) => handleChange(q.id, e.target.value)}
+                  placeholder="Type your answer here..."
+                  className="resize-none min-h-[80px] text-sm"
+                  aria-required={q.isRequired}
+                  data-testid={`answer-text-${q.id}`}
+                />
+              )}
+
+              {/* Yes / No */}
+              {q.questionType === "yes_no" && (
+                <div
+                  className="flex gap-2"
+                  role="radiogroup"
+                  aria-labelledby={`question-${q.id}`}
+                  aria-required={q.isRequired}
+                >
+                  {["Yes", "No"].map((opt) => (
+                    <button
+                      key={opt}
+                      type="button"
+                      role="radio"
+                      aria-checked={answers[q.id] === opt}
+                      onClick={() => handleChange(q.id, opt)}
+                      className={`flex-1 py-2.5 rounded-xl border text-sm font-medium transition-all ${
+                        answers[q.id] === opt
+                          ? "border-primary bg-primary/10 text-primary"
+                          : "border-border bg-background text-foreground hover:border-primary/40 hover:bg-muted/40"
+                      }`}
+                      data-testid={`answer-yesno-${q.id}-${opt.toLowerCase()}`}
+                    >
+                      {opt}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Multiple choice */}
+              {q.questionType === "multiple" && q.options.length > 0 && (
+                <div
+                  className="space-y-2"
+                  role="radiogroup"
+                  aria-labelledby={`question-${q.id}`}
+                  aria-required={q.isRequired}
+                >
+                  {q.options.map((opt, oi) => (
+                    <button
+                      key={oi}
+                      type="button"
+                      role="radio"
+                      aria-checked={answers[q.id] === opt}
+                      onClick={() => handleChange(q.id, opt)}
+                      className={`w-full text-left px-4 py-3 rounded-xl border text-sm transition-all ${
+                        answers[q.id] === opt
+                          ? "border-primary bg-primary/10 text-primary font-medium"
+                          : "border-border bg-background text-foreground hover:border-primary/40 hover:bg-muted/40"
+                      }`}
+                      data-testid={`answer-multi-${q.id}-${oi}`}
+                    >
+                      <span className="font-semibold mr-2 text-xs text-muted-foreground">
+                        {String.fromCharCode(65 + oi)}.
+                      </span>
+                      {opt}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+      </div>
+
+      {/* Required warning */}
+      {getMissingRequired().length > 0 && Object.keys(answers).length > 0 && (
+        <p
+          className="mt-4 text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1.5"
+          role="alert"
+        >
+          <AlertTriangle size={12} aria-hidden="true" />
+          Please answer {getMissingRequired().length} required question(s) before submitting.
+        </p>
+      )}
+
+      {/* Actions */}
+      <div className="flex gap-2 mt-6">
+        <Button variant="outline" size="sm" className="flex-1" onClick={onClose} aria-label="Cancel">
+          Cancel
+        </Button>
+        <Button
+          size="sm"
+          className="flex-1 gap-1.5"
+          onClick={() => submitMutation.mutate()}
+          disabled={!canSubmit || submitMutation.isPending}
+          aria-label="Submit your answers"
+          data-testid="button-submit-answers"
+        >
+          {submitMutation.isPending ? (
+            <span className="animate-spin rounded-full h-3 w-3 border-2 border-current border-t-transparent" aria-hidden="true" />
+          ) : (
+            <Send size={13} aria-hidden="true" />
+          )}
+          Submit Answers
+        </Button>
+      </div>
+    </ModalShell>
+  );
+}
 
 // ─── Assessment Modal ─────────────────────────────────────────────────────────
 
@@ -91,7 +447,6 @@ function AssessmentModal({ job, userId, onClose, onPassed }: AssessmentModalProp
     },
   });
 
-  // Initialize answers + timer once data loads
   useEffect(() => {
     if (assessmentData && !assessmentData.alreadyTaken && assessmentData.questions) {
       setAnswers(new Array(assessmentData.questions.length).fill(null));
@@ -126,7 +481,6 @@ function AssessmentModal({ job, userId, onClose, onPassed }: AssessmentModalProp
     submitMutation.mutate(finalAnswers ?? answers);
   }, [submitted, answers]);
 
-  // Countdown timer
   useEffect(() => {
     if (timeLeft === null || submitted) return;
     if (timeLeft <= 0) { handleSubmit(); return; }
@@ -135,7 +489,6 @@ function AssessmentModal({ job, userId, onClose, onPassed }: AssessmentModalProp
   }, [timeLeft, submitted]);
 
   const formatTime = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-
   const selectAnswer = (idx: number) => {
     if (submitted) return;
     const updated = [...answers];
@@ -143,24 +496,15 @@ function AssessmentModal({ job, userId, onClose, onPassed }: AssessmentModalProp
     setAnswers(updated);
   };
 
-  // ── Already taken ──
   if (assessmentData?.alreadyTaken) {
     return (
-      <ModalShell onClose={onClose}>
+      <ModalShell onClose={onClose} ariaLabel="Assessment Result">
         <div className="text-center space-y-4 py-4">
-          <div className={`w-16 h-16 rounded-full mx-auto flex items-center justify-center ${
-            assessmentData.passed ? "bg-green-100 dark:bg-green-900/30" : "bg-red-100 dark:bg-red-900/30"
-          }`}>
-            {assessmentData.passed
-              ? <Award size={32} className="text-green-600 dark:text-green-400" />
-              : <XCircle size={32} className="text-red-600 dark:text-red-400" />}
+          <div className={`w-16 h-16 rounded-full mx-auto flex items-center justify-center ${assessmentData.passed ? "bg-green-100 dark:bg-green-900/30" : "bg-red-100 dark:bg-red-900/30"}`}>
+            {assessmentData.passed ? <Award size={32} className="text-green-600 dark:text-green-400" /> : <XCircle size={32} className="text-red-600 dark:text-red-400" />}
           </div>
-          <h3 className="text-lg font-semibold text-foreground">
-            {assessmentData.passed ? "Assessment Passed!" : "Assessment Not Passed"}
-          </h3>
-          <p className="text-sm text-muted-foreground">
-            You scored <span className="font-bold text-foreground">{assessmentData.score}%</span>. Passing score is {assessmentData.passingScore}%.
-          </p>
+          <h3 className="text-lg font-semibold text-foreground">{assessmentData.passed ? "Assessment Passed!" : "Assessment Not Passed"}</h3>
+          <p className="text-sm text-muted-foreground">You scored <span className="font-bold text-foreground">{assessmentData.score}%</span>. Passing score is {assessmentData.passingScore}%.</p>
           {assessmentData.passed ? (
             <div className="space-y-3">
               <p className="text-sm text-green-700 dark:text-green-400">You can express interest in this job.</p>
@@ -180,21 +524,14 @@ function AssessmentModal({ job, userId, onClose, onPassed }: AssessmentModalProp
     );
   }
 
-  // ── Result screen ──
   if (submitted && result) {
     return (
-      <ModalShell onClose={onClose}>
+      <ModalShell onClose={onClose} ariaLabel="Assessment Result">
         <div className="text-center space-y-4 py-4">
-          <div className={`w-16 h-16 rounded-full mx-auto flex items-center justify-center ${
-            result.passed ? "bg-green-100 dark:bg-green-900/30" : "bg-red-100 dark:bg-red-900/30"
-          }`}>
-            {result.passed
-              ? <Award size={32} className="text-green-600 dark:text-green-400" />
-              : <XCircle size={32} className="text-red-600 dark:text-red-400" />}
+          <div className={`w-16 h-16 rounded-full mx-auto flex items-center justify-center ${result.passed ? "bg-green-100 dark:bg-green-900/30" : "bg-red-100 dark:bg-red-900/30"}`}>
+            {result.passed ? <Award size={32} className="text-green-600 dark:text-green-400" /> : <XCircle size={32} className="text-red-600 dark:text-red-400" />}
           </div>
-          <h3 className="text-lg font-semibold text-foreground">
-            {result.passed ? "You Passed! 🎉" : "Not Passed"}
-          </h3>
+          <h3 className="text-lg font-semibold text-foreground">{result.passed ? "You Passed! 🎉" : "Not Passed"}</h3>
           <div className="bg-muted/40 rounded-xl p-4 space-y-1 text-sm">
             <p>Score: <span className="font-bold text-foreground">{result.score}%</span></p>
             <p>Correct: <span className="font-bold text-foreground">{result.correct} / {result.totalQuestions}</span></p>
@@ -205,9 +542,7 @@ function AssessmentModal({ job, userId, onClose, onPassed }: AssessmentModalProp
               <p className="text-sm text-green-700 dark:text-green-400 font-medium">You qualify! You can now express interest in this job.</p>
               <div className="flex gap-2 justify-center">
                 <Button variant="outline" size="sm" onClick={onClose}>Later</Button>
-                <Button size="sm" className="gap-1" onClick={onPassed}>
-                  Express Interest <ArrowRight size={14} />
-                </Button>
+                <Button size="sm" className="gap-1" onClick={onPassed}>Express Interest <ArrowRight size={14} /></Button>
               </div>
             </div>
           ) : (
@@ -221,10 +556,9 @@ function AssessmentModal({ job, userId, onClose, onPassed }: AssessmentModalProp
     );
   }
 
-  // ── Loading ──
   if (isLoading || !assessmentData || !assessmentData.questions) {
     return (
-      <ModalShell onClose={onClose}>
+      <ModalShell onClose={onClose} ariaLabel="Skill Assessment">
         <div className="space-y-3 py-4">
           <Skeleton className="h-4 w-3/4" />
           <Skeleton className="h-3 w-full" />
@@ -240,28 +574,19 @@ function AssessmentModal({ job, userId, onClose, onPassed }: AssessmentModalProp
   const progress = Math.round((answered / questions.length) * 100);
   const isLast = currentQ === questions.length - 1;
 
-  // ── Quiz ──
   return (
-    <ModalShell onClose={onClose}>
-      {/* Header */}
+    <ModalShell onClose={onClose} ariaLabel="Skill Assessment">
       <div className="flex items-center justify-between mb-4">
         <div>
-          <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide flex items-center gap-1.5">
-            <Brain size={12} aria-hidden="true" /> Skill Assessment
-          </p>
+          <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide flex items-center gap-1.5"><Brain size={12} aria-hidden="true" /> Skill Assessment</p>
           <h3 className="text-sm font-semibold text-foreground mt-0.5">{job.title}</h3>
         </div>
         {timeLeft !== null && (
-          <div className={`flex items-center gap-1.5 text-sm font-mono font-semibold px-3 py-1.5 rounded-lg ${
-            timeLeft <= 60 ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400" : "bg-muted text-foreground"
-          }`} aria-label={`Time remaining: ${formatTime(timeLeft)}`} aria-live="off">
-            <Clock size={13} aria-hidden="true" />
-            {formatTime(timeLeft)}
+          <div className={`flex items-center gap-1.5 text-sm font-mono font-semibold px-3 py-1.5 rounded-lg ${timeLeft <= 60 ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400" : "bg-muted text-foreground"}`} aria-label={`Time remaining: ${formatTime(timeLeft)}`} aria-live="off">
+            <Clock size={13} aria-hidden="true" /> {formatTime(timeLeft)}
           </div>
         )}
       </div>
-
-      {/* Progress */}
       <div className="mb-4">
         <div className="flex justify-between text-xs text-muted-foreground mb-1.5">
           <span>Question {currentQ + 1} of {questions.length}</span>
@@ -269,103 +594,37 @@ function AssessmentModal({ job, userId, onClose, onPassed }: AssessmentModalProp
         </div>
         <Progress value={progress} className="h-1.5" aria-label={`${progress}% of questions answered`} />
       </div>
-
-      {/* Question */}
       <div className="mb-4">
-        <p className="text-sm font-medium text-foreground leading-relaxed" id={`question-text-${currentQ}`}>
-          {q.question}
-        </p>
+        <p className="text-sm font-medium text-foreground leading-relaxed" id={`question-text-${currentQ}`}>{q.question}</p>
       </div>
-
-      {/* Options */}
       <div className="space-y-2 mb-6" role="radiogroup" aria-labelledby={`question-text-${currentQ}`}>
         {q.options.map((opt, oi) => (
-          <button
-            key={oi}
-            type="button"
-            role="radio"
-            aria-checked={answers[currentQ] === oi}
-            onClick={() => selectAnswer(oi)}
-            data-testid={`option-${currentQ}-${oi}`}
-            className={`w-full text-left px-4 py-3 rounded-xl border text-sm transition-all ${
-              answers[currentQ] === oi
-                ? "border-primary bg-primary/10 text-primary font-medium"
-                : "border-border bg-background text-foreground hover:border-primary/40 hover:bg-muted/40"
-            }`}
-          >
-            <span className="font-semibold mr-2 text-xs text-muted-foreground">
-              {String.fromCharCode(65 + oi)}.
-            </span>
-            {opt}
+          <button key={oi} type="button" role="radio" aria-checked={answers[currentQ] === oi} onClick={() => selectAnswer(oi)} data-testid={`option-${currentQ}-${oi}`}
+            className={`w-full text-left px-4 py-3 rounded-xl border text-sm transition-all ${answers[currentQ] === oi ? "border-primary bg-primary/10 text-primary font-medium" : "border-border bg-background text-foreground hover:border-primary/40 hover:bg-muted/40"}`}>
+            <span className="font-semibold mr-2 text-xs text-muted-foreground">{String.fromCharCode(65 + oi)}.</span>{opt}
           </button>
         ))}
       </div>
-
-      {/* Navigation */}
       <div className="flex items-center justify-between">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setCurrentQ((q) => Math.max(0, q - 1))}
-          disabled={currentQ === 0}
-          className="gap-1"
-          aria-label="Previous question"
-        >
+        <Button variant="outline" size="sm" onClick={() => setCurrentQ((q) => Math.max(0, q - 1))} disabled={currentQ === 0} className="gap-1" aria-label="Previous question">
           <ArrowLeft size={14} aria-hidden="true" /> Prev
         </Button>
-
         {isLast ? (
-          <Button
-            size="sm"
-            onClick={() => handleSubmit()}
-            disabled={submitMutation.isPending}
-            className="gap-1"
-            aria-label="Submit assessment"
-            data-testid="button-submit-assessment"
-          >
-            {submitMutation.isPending ? (
-              <span className="animate-spin rounded-full h-3 w-3 border-2 border-current border-t-transparent" aria-hidden="true" />
-            ) : (
-              <CheckCircle2 size={14} aria-hidden="true" />
-            )}
-            Submit
+          <Button size="sm" onClick={() => handleSubmit()} disabled={submitMutation.isPending} className="gap-1" aria-label="Submit assessment" data-testid="button-submit-assessment">
+            {submitMutation.isPending ? <span className="animate-spin rounded-full h-3 w-3 border-2 border-current border-t-transparent" aria-hidden="true" /> : <CheckCircle2 size={14} aria-hidden="true" />} Submit
           </Button>
         ) : (
-          <Button
-            size="sm"
-            onClick={() => setCurrentQ((q) => Math.min(questions.length - 1, q + 1))}
-            className="gap-1"
-            aria-label="Next question"
-          >
+          <Button size="sm" onClick={() => setCurrentQ((q) => Math.min(questions.length - 1, q + 1))} className="gap-1" aria-label="Next question">
             Next <ArrowRight size={14} aria-hidden="true" />
           </Button>
         )}
       </div>
-
-      {/* Unanswered warning */}
       {isLast && answers.some((a) => a === null) && (
         <p className="mt-3 text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1.5" role="alert">
-          <AlertTriangle size={12} aria-hidden="true" />
-          {answers.filter((a) => a === null).length} question(s) unanswered. You can still submit.
+          <AlertTriangle size={12} aria-hidden="true" /> {answers.filter((a) => a === null).length} question(s) unanswered. You can still submit.
         </p>
       )}
     </ModalShell>
-  );
-}
-
-function ModalShell({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Skill Assessment"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div className="bg-card border border-border rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-6">
-        {children}
-      </div>
-    </div>
   );
 }
 
@@ -378,6 +637,7 @@ export default function SeekerJobs() {
   const [typeFilter, setTypeFilter] = useState("");
   const [expandedJobId, setExpandedJobId] = useState<number | null>(null);
   const [assessmentJobId, setAssessmentJobId] = useState<number | null>(null);
+  const [questionsJobId, setQuestionsJobId] = useState<number | null>(null);
 
   const { data: jobs, isLoading: jobsLoading } = useQuery<Job[]>({
     queryKey: ["/api/jobs"],
@@ -435,10 +695,10 @@ export default function SeekerJobs() {
   });
 
   const assessmentJob = assessmentJobId !== null ? (jobs || []).find((j) => j.id === assessmentJobId) ?? null : null;
+  const questionsJob = questionsJobId !== null ? (jobs || []).find((j) => j.id === questionsJobId) ?? null : null;
 
   const handleExpressInterest = (job: Job, match: JobMatch) => {
     if (job.hasAssessment) {
-      // Open assessment modal first — express interest happens AFTER passing
       setAssessmentJobId(job.id);
     } else {
       expressInterestMutation.mutate({ matchId: match.id, status: "accepted" });
@@ -463,6 +723,15 @@ export default function SeekerJobs() {
             if (match) handleAssessmentPassed(match);
             else setAssessmentJobId(null);
           }}
+        />
+      )}
+
+      {/* Employer Questions Modal */}
+      {questionsJob && user && (
+        <QuestionsModal
+          job={questionsJob}
+          userId={user.id}
+          onClose={() => setQuestionsJobId(null)}
         />
       )}
 
@@ -570,7 +839,20 @@ export default function SeekerJobs() {
                           {job.salary && <p className="text-xs font-medium text-foreground mt-1.5">{job.salary}</p>}
                         </div>
 
-                        <div className="flex gap-2 flex-shrink-0">
+                        <div className="flex gap-2 flex-shrink-0 flex-wrap">
+                          {/* Answer Questions button — always visible to seekers */}
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-8 text-xs gap-1.5 border-primary/30 text-primary hover:bg-primary/5"
+                            onClick={() => setQuestionsJobId(job.id)}
+                            aria-label={`Answer employer questions for ${job.title}`}
+                            data-testid={`button-view-questions-${job.id}`}
+                          >
+                            <MessageSquare size={12} aria-hidden="true" />
+                            Questions
+                          </Button>
+
                           {match ? (
                             match.status === "accepted" ? (
                               <Badge className="bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 border-0 text-xs">Interested ✓</Badge>
@@ -626,8 +908,28 @@ export default function SeekerJobs() {
                       <div id={`job-details-${job.id}`} className="border-t border-border/60 px-5 py-4 bg-muted/20">
                         <h4 className="text-sm font-semibold text-foreground mb-2">Job Description</h4>
                         <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-wrap">{job.description}</p>
+
+                        {/* Questions callout in expanded view */}
+                        <div className="mt-4 bg-primary/5 border border-primary/20 rounded-xl p-3">
+                          <p className="text-xs font-semibold text-primary flex items-center gap-1.5 mb-1">
+                            <MessageSquare size={12} aria-hidden="true" /> Employer Questions
+                          </p>
+                          <p className="text-xs text-muted-foreground mb-2">
+                            The employer may have screening questions for this position. Click to view and answer them.
+                          </p>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="text-xs h-7 gap-1.5 border-primary/30 text-primary hover:bg-primary/5"
+                            onClick={() => setQuestionsJobId(job.id)}
+                            aria-label={`Answer employer questions for ${job.title}`}
+                          >
+                            <MessageSquare size={11} aria-hidden="true" /> View & Answer Questions
+                          </Button>
+                        </div>
+
                         {job.hasAssessment && (
-                          <div className="mt-4 bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-800 rounded-xl p-3">
+                          <div className="mt-3 bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-800 rounded-xl p-3">
                             <p className="text-xs font-semibold text-violet-700 dark:text-violet-400 flex items-center gap-1.5 mb-1">
                               <Brain size={12} aria-hidden="true" /> Skill Assessment Required
                             </p>
