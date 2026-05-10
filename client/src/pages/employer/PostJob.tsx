@@ -14,6 +14,8 @@ import {
   Briefcase, Brain, Trash2, ChevronDown, ChevronUp,
 } from "lucide-react";
 
+const MIN_ASSESSMENT_QUESTIONS = 5;
+
 const WORK_TYPES = [
   { value: "full_time", label: "Full-time" },
   { value: "part_time", label: "Part-time" },
@@ -38,7 +40,7 @@ interface AssessmentQuestion {
   id: string;
   question: string;
   options: string[];
-  correctIndex: number; // index of the correct option
+  correctIndex: number;
 }
 
 export default function PostJob() {
@@ -107,7 +109,6 @@ export default function PostJob() {
       setOptionError("Please select the correct answer.");
       return;
     }
-    // Remap correctIndex to filtered options
     const filledWithIndex = newOptions
       .map((o, i) => ({ text: o.trim(), originalIndex: i }))
       .filter((o) => o.text !== "");
@@ -140,7 +141,7 @@ export default function PostJob() {
         ...form,
         requiredSkills: form.requiredSkills,
       };
-      if (enableAssessment && assessmentQuestions.length > 0) {
+      if (enableAssessment && assessmentQuestions.length >= MIN_ASSESSMENT_QUESTIONS) {
         payload.assessment = {
           timer: assessmentTimer,
           passingScore,
@@ -166,11 +167,15 @@ export default function PostJob() {
     },
   });
 
+  const assessmentReady = !enableAssessment || assessmentQuestions.length >= MIN_ASSESSMENT_QUESTIONS;
+
   const canSubmit =
     form.title &&
     form.description &&
     form.requiredSkills.length > 0 &&
-    (!enableAssessment || assessmentQuestions.length >= 1);
+    assessmentReady;
+
+  const questionsRemaining = Math.max(0, MIN_ASSESSMENT_QUESTIONS - assessmentQuestions.length);
 
   return (
     <DashboardLayout title="Post a Job">
@@ -349,7 +354,7 @@ export default function PostJob() {
             )}
           </div>
 
-          {/* ── Skill Assessment (NEW) ── */}
+          {/* ── Skill Assessment ── */}
           <div className="bg-card border border-border/60 rounded-2xl p-6 space-y-5">
             {/* Toggle header */}
             <div className="flex items-center justify-between">
@@ -559,12 +564,27 @@ export default function PostJob() {
                 ) : (
                   <div className="text-center py-6 text-muted-foreground">
                     <Brain size={28} className="mx-auto mb-2 opacity-30" aria-hidden="true" />
-                    <p className="text-xs">No questions added yet. Add at least 1 question to enable the assessment.</p>
+                    <p className="text-xs">No questions added yet.</p>
                   </div>
                 )}
 
-                {/* Summary */}
-                {assessmentQuestions.length > 0 && (
+                {/* Progress / Warning */}
+                {assessmentQuestions.length < MIN_ASSESSMENT_QUESTIONS ? (
+                  <div
+                    className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl p-3 flex items-center gap-2 text-xs text-amber-700 dark:text-amber-400"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    <AlertCircle size={14} className="flex-shrink-0" aria-hidden="true" />
+                    <span>
+                      Add{" "}
+                      <span className="font-semibold">
+                        {questionsRemaining} more question{questionsRemaining !== 1 ? "s" : ""}
+                      </span>{" "}
+                      — a minimum of {MIN_ASSESSMENT_QUESTIONS} questions is required to enable the assessment.
+                    </span>
+                  </div>
+                ) : (
                   <div className="bg-primary/5 border border-primary/20 rounded-xl p-3 flex flex-wrap gap-3 text-xs text-foreground">
                     <span><span className="font-semibold">{assessmentQuestions.length}</span> question{assessmentQuestions.length > 1 ? "s" : ""}</span>
                     <span>·</span>
