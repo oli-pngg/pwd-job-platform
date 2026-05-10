@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { PlusCircle, X, Plus, CheckCircle2, AlertCircle, Briefcase } from "lucide-react";
+import { PlusCircle, X, Plus, CheckCircle2, AlertCircle, Briefcase, HelpCircle, Trash2, GripVertical } from "lucide-react";
 
 const WORK_TYPES = [
   { value: "full_time", label: "Full-time" },
@@ -24,12 +24,34 @@ const COMMON_SKILLS = [
   "Filing", "Bookkeeping", "Social Media", "Content Writing", "Analysis",
 ];
 
+const QUESTION_TYPES = [
+  { value: "text", label: "Short Answer" },
+  { value: "textarea", label: "Long Answer" },
+  { value: "multiple_choice", label: "Multiple Choice" },
+  { value: "yes_no", label: "Yes / No" },
+];
+
+interface Question {
+  id: string;
+  type: "text" | "textarea" | "multiple_choice" | "yes_no";
+  question: string;
+  required: boolean;
+  options: string[]; // for multiple_choice
+}
+
 export default function PostJob() {
   const { user } = useAuth();
 
   const [skillInput, setSkillInput] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
+
+  // Questions state
+  const [questions, setQuestions] = useState<Question[]>([]);
+  const [questionInput, setQuestionInput] = useState("");
+  const [questionType, setQuestionType] = useState<Question["type"]>("text");
+  const [optionInput, setOptionInput] = useState("");
+  const [addingOptionsFor, setAddingOptionsFor] = useState<string | null>(null);
 
   const [form, setForm] = useState({
     title: "",
@@ -54,6 +76,55 @@ export default function PostJob() {
     updateForm("requiredSkills", form.requiredSkills.filter((s) => s !== skill));
   };
 
+  // Question helpers
+  const addQuestion = () => {
+    const trimmed = questionInput.trim();
+    if (!trimmed) return;
+    const newQ: Question = {
+      id: Date.now().toString(),
+      type: questionType,
+      question: trimmed,
+      required: false,
+      options: questionType === "yes_no" ? ["Yes", "No"] : [],
+    };
+    setQuestions((prev) => [...prev, newQ]);
+    setQuestionInput("");
+    setQuestionType("text");
+    if (questionType === "multiple_choice") setAddingOptionsFor(newQ.id);
+  };
+
+  const removeQuestion = (id: string) => {
+    setQuestions((prev) => prev.filter((q) => q.id !== id));
+    if (addingOptionsFor === id) setAddingOptionsFor(null);
+  };
+
+  const toggleRequired = (id: string) => {
+    setQuestions((prev) =>
+      prev.map((q) => (q.id === id ? { ...q, required: !q.required } : q))
+    );
+  };
+
+  const addOption = (id: string) => {
+    const trimmed = optionInput.trim();
+    if (!trimmed) return;
+    setQuestions((prev) =>
+      prev.map((q) =>
+        q.id === id && !q.options.includes(trimmed)
+          ? { ...q, options: [...q.options, trimmed] }
+          : q
+      )
+    );
+    setOptionInput("");
+  };
+
+  const removeOption = (questionId: string, option: string) => {
+    setQuestions((prev) =>
+      prev.map((q) =>
+        q.id === questionId ? { ...q, options: q.options.filter((o) => o !== option) } : q
+      )
+    );
+  };
+
   const mutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/jobs", {
@@ -61,6 +132,7 @@ export default function PostJob() {
         company: user?.company || user?.name,
         ...form,
         requiredSkills: form.requiredSkills,
+        questions: questions,
       });
       if (!res.ok) {
         const err = await res.json();
@@ -111,6 +183,7 @@ export default function PostJob() {
           aria-label="Post a job form"
           className="space-y-5"
         >
+          {/* Job Details */}
           <div className="bg-card border border-border/60 rounded-2xl p-6 space-y-5">
             <h2 className="text-sm font-semibold text-foreground uppercase tracking-wide">Job Details</h2>
 
@@ -195,6 +268,7 @@ export default function PostJob() {
             </div>
           </div>
 
+          {/* Required Skills */}
           <div className="bg-card border border-border/60 rounded-2xl p-6">
             <h2 className="text-sm font-semibold text-foreground uppercase tracking-wide mb-1">
               Required Skills <span aria-hidden="true" className="text-destructive">*</span>
@@ -203,7 +277,6 @@ export default function PostJob() {
               These skills are compared against seeker profiles for matching. Add specific, relevant skills.
             </p>
 
-            {/* Quick-add common skills */}
             <div className="flex flex-wrap gap-1.5 mb-3">
               {COMMON_SKILLS.filter((s) => !form.requiredSkills.includes(s)).map((s) => (
                 <button
@@ -265,6 +338,200 @@ export default function PostJob() {
               </div>
             ) : (
               <p className="text-xs text-muted-foreground">No skills added yet. Add at least one required skill.</p>
+            )}
+          </div>
+
+          {/* ── Screening Questions (NEW) ── */}
+          <div className="bg-card border border-border/60 rounded-2xl p-6 space-y-4">
+            <div>
+              <h2 className="text-sm font-semibold text-foreground uppercase tracking-wide mb-1 flex items-center gap-2">
+                <HelpCircle size={15} className="text-primary" aria-hidden="true" />
+                Screening Questions
+                <span className="text-xs font-normal normal-case text-muted-foreground">(optional)</span>
+              </h2>
+              <p className="text-xs text-muted-foreground">
+                Add questions that applicants must answer when applying to this job. Supports short answer, long answer, multiple choice, and yes/no formats.
+              </p>
+            </div>
+
+            {/* Add question form */}
+            <div className="border border-dashed border-border rounded-xl p-4 space-y-3 bg-muted/30">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <div className="sm:col-span-2">
+                  <Label htmlFor="question-input" className="text-xs mb-1 block">Question</Label>
+                  <Input
+                    id="question-input"
+                    value={questionInput}
+                    onChange={(e) => setQuestionInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addQuestion(); } }}
+                    placeholder="e.g., Do you have prior data entry experience?"
+                    aria-label="Enter screening question"
+                    data-testid="input-question"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="question-type" className="text-xs mb-1 block">Answer Type</Label>
+                  <select
+                    id="question-type"
+                    value={questionType}
+                    onChange={(e) => setQuestionType(e.target.value as Question["type"])}
+                    className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    aria-label="Select question type"
+                    data-testid="select-question-type"
+                  >
+                    {QUESTION_TYPES.map((qt) => (
+                      <option key={qt.value} value={qt.value}>{qt.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={addQuestion}
+                disabled={!questionInput.trim()}
+                className="w-full gap-2"
+                aria-label="Add screening question"
+                data-testid="button-add-question"
+              >
+                <Plus size={14} aria-hidden="true" /> Add Question
+              </Button>
+            </div>
+
+            {/* Questions list */}
+            {questions.length > 0 ? (
+              <ul className="space-y-3" aria-label="Screening questions list">
+                {questions.map((q, index) => (
+                  <li
+                    key={q.id}
+                    className="border border-border rounded-xl p-4 bg-background space-y-2"
+                    data-testid={`question-item-${index}`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-start gap-2 flex-1 min-w-0">
+                        <GripVertical size={14} className="text-muted-foreground mt-0.5 flex-shrink-0" aria-hidden="true" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-foreground break-words">
+                            {index + 1}. {q.question}
+                          </p>
+                          <div className="flex items-center gap-2 mt-1 flex-wrap">
+                            <Badge variant="outline" className="text-xs capitalize">
+                              {QUESTION_TYPES.find((t) => t.value === q.type)?.label}
+                            </Badge>
+                            <button
+                              type="button"
+                              onClick={() => toggleRequired(q.id)}
+                              className={`text-xs px-2 py-0.5 rounded-full border transition-all ${
+                                q.required
+                                  ? "bg-primary/10 text-primary border-primary/30"
+                                  : "bg-muted text-muted-foreground border-border hover:border-primary/30"
+                              }`}
+                              aria-pressed={q.required}
+                              aria-label={`Mark question ${index + 1} as ${q.required ? "optional" : "required"}`}
+                              data-testid={`button-toggle-required-${index}`}
+                            >
+                              {q.required ? "✓ Required" : "Optional"}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeQuestion(q.id)}
+                        className="p-1.5 rounded-lg hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-all flex-shrink-0"
+                        aria-label={`Remove question ${index + 1}`}
+                        data-testid={`button-remove-question-${index}`}
+                      >
+                        <Trash2 size={14} aria-hidden="true" />
+                      </button>
+                    </div>
+
+                    {/* Multiple choice options */}
+                    {q.type === "multiple_choice" && (
+                      <div className="ml-6 space-y-2">
+                        {q.options.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5" aria-label={`Options for question ${index + 1}`}>
+                            {q.options.map((opt) => (
+                              <Badge
+                                key={opt}
+                                variant="secondary"
+                                className="gap-1 pr-1 text-xs"
+                              >
+                                {opt}
+                                <button
+                                  type="button"
+                                  onClick={() => removeOption(q.id, opt)}
+                                  className="ml-0.5 rounded-full hover:bg-muted p-0.5"
+                                  aria-label={`Remove option: ${opt}`}
+                                >
+                                  <X size={10} aria-hidden="true" />
+                                </button>
+                              </Badge>
+                            ))}
+                          </div>
+                        )}
+                        {addingOptionsFor === q.id ? (
+                          <div className="flex gap-2">
+                            <Input
+                              value={optionInput}
+                              onChange={(e) => setOptionInput(e.target.value)}
+                              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addOption(q.id); } }}
+                              placeholder="Type an option and press Enter"
+                              className="flex-1 h-8 text-xs"
+                              aria-label="Add answer option"
+                              data-testid={`input-option-${index}`}
+                            />
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => addOption(q.id)}
+                              disabled={!optionInput.trim()}
+                              className="h-8 text-xs"
+                              aria-label="Add option"
+                            >
+                              <Plus size={12} aria-hidden="true" />
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => setAddingOptionsFor(null)}
+                              className="h-8 text-xs"
+                              aria-label="Done adding options"
+                            >
+                              Done
+                            </Button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setAddingOptionsFor(q.id)}
+                            className="text-xs text-primary hover:underline"
+                            aria-label="Add answer options"
+                          >
+                            + Add options
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Yes/No preview */}
+                    {q.type === "yes_no" && (
+                      <div className="ml-6 flex gap-2">
+                        <Badge variant="outline" className="text-xs">Yes</Badge>
+                        <Badge variant="outline" className="text-xs">No</Badge>
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div className="text-center py-6 text-muted-foreground">
+                <HelpCircle size={28} className="mx-auto mb-2 opacity-30" aria-hidden="true" />
+                <p className="text-xs">No questions added yet. Questions are optional.</p>
+              </div>
             )}
           </div>
 
