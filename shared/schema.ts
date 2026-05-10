@@ -40,6 +40,12 @@ export const jobs = sqliteTable("jobs", {
   requiredSkills: text("required_skills").default("[]"), // JSON array
   salary: text("salary"),
   isActive: integer("is_active", { mode: "boolean" }).default(true),
+  /**
+   * assessment — nullable JSON stored as TEXT.
+   * Shape: { timer: number, passingScore: number, questions: { question: string, options: string[], correctIndex: number }[] }
+   * null means this job has no assessment requirement.
+   */
+  assessment: text("assessment"),
   createdAt: integer("created_at", { mode: "timestamp" }),
 });
 
@@ -50,7 +56,7 @@ export const insertJobSchema = createInsertSchema(jobs).omit({
 export type InsertJob = z.infer<typeof insertJobSchema>;
 export type Job = typeof jobs.$inferSelect;
 
-// ─── Assessments ─────────────────────────────────────────────────────────────
+// ─── Assessments (seeker platform assessments) ────────────────────────────────
 
 export const assessments = sqliteTable("assessments", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -66,6 +72,25 @@ export const insertAssessmentSchema = createInsertSchema(assessments).omit({
 });
 export type InsertAssessment = z.infer<typeof insertAssessmentSchema>;
 export type Assessment = typeof assessments.$inferSelect;
+
+// ─── Job Assessment Results ───────────────────────────────────────────────────
+// Stores the result of a seeker taking an employer's job-specific assessment.
+
+export const jobAssessmentResults = sqliteTable("job_assessment_results", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  jobId: integer("job_id").notNull(),
+  seekerId: integer("seeker_id").notNull(),
+  score: integer("score").notNull(), // 0-100
+  passed: integer("passed", { mode: "boolean" }).notNull().default(false),
+  completedAt: integer("completed_at", { mode: "timestamp" }),
+});
+
+export const insertJobAssessmentResultSchema = createInsertSchema(jobAssessmentResults).omit({
+  id: true,
+  completedAt: true,
+});
+export type InsertJobAssessmentResult = z.infer<typeof insertJobAssessmentResultSchema>;
+export type JobAssessmentResult = typeof jobAssessmentResults.$inferSelect;
 
 // ─── Job Matches ──────────────────────────────────────────────────────────────
 

@@ -7,10 +7,13 @@ import {
   type InsertAssessment,
   type JobMatch,
   type InsertJobMatch,
+  type JobAssessmentResult,
+  type InsertJobAssessmentResult,
   users,
   jobs,
   assessments,
   jobMatches,
+  jobAssessmentResults,
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
@@ -51,6 +54,7 @@ sqlite.exec(`
     required_skills TEXT DEFAULT '[]',
     salary TEXT,
     is_active INTEGER DEFAULT 1,
+    assessment TEXT,
     created_at INTEGER
   );
 
@@ -59,6 +63,15 @@ sqlite.exec(`
     user_id INTEGER NOT NULL,
     category TEXT NOT NULL,
     score INTEGER NOT NULL,
+    completed_at INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS job_assessment_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL,
+    seeker_id INTEGER NOT NULL,
+    score INTEGER NOT NULL,
+    passed INTEGER NOT NULL DEFAULT 0,
     completed_at INTEGER
   );
 
@@ -72,6 +85,13 @@ sqlite.exec(`
     created_at INTEGER
   );
 `);
+
+// Migrate: add assessment column to existing jobs table if it doesn't exist
+try {
+  sqlite.exec(`ALTER TABLE jobs ADD COLUMN assessment TEXT;`);
+} catch (_) {
+  // Column already exists — ignore
+}
 
 // ─── Storage Interface ────────────────────────────────────────────────────────
 
@@ -92,11 +112,15 @@ export interface IStorage {
   deleteJob(id: number): void;
   getEmployerJobs(employerId: number): Job[];
 
-  // Assessments
+  // Platform Assessments
   getAssessment(id: number): Assessment | undefined;
   getUserAssessments(userId: number): Assessment[];
   createAssessment(assessment: InsertAssessment): Assessment;
   deleteUserCategoryAssessment(userId: number, category: string): void;
+
+  // Job Assessment Results
+  getJobAssessmentResult(jobId: number, seekerId: number): JobAssessmentResult | undefined;
+  createJobAssessmentResult(result: InsertJobAssessmentResult): JobAssessmentResult;
 
   // Job Matches
   getMatch(id: number): JobMatch | undefined;
@@ -146,8 +170,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   getJobs(filters?: { type?: string; location?: string; employerId?: number }): Job[] {
-    let query = db.select().from(jobs).where(eq(jobs.isActive, true));
-    return query.all();
+    return db.select().from(jobs).where(eq(jobs.isActive, true)).all();
   }
 
   createJob(insertJob: InsertJob): Job {
@@ -167,7 +190,7 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(jobs).where(eq(jobs.employerId, employerId)).all();
   }
 
-  // Assessments
+  // Platform Assessments
   getAssessment(id: number): Assessment | undefined {
     return db.select().from(assessments).where(eq(assessments.id, id)).get();
   }
@@ -187,21 +210,29 @@ export class DatabaseStorage implements IStorage {
       .run();
   }
 
+  // Job Assessment Results
+  getJobAssessmentResult(jobId: number, seekerId: number): JobAssessmentResult | undefined {
+    return db.select().from(jobAssessmentResults)
+      .where(and(eq(jobAssessmentResults.jobId, jobId), eq(jobAssessmentResults.seekerId, seekerId)))
+      .get();
+  }
+
+  createJobAssessmentResult(result: InsertJobAssessmentResult): JobAssessmentResult {
+    const data = { ...result, completedAt: new Date() };
+    return db.insert(jobAssessmentResults).values(data).returning().get();
+  }
+
   // Job Matches
   getMatch(id: number): JobMatch | undefined {
     return db.select().from(jobMatches).where(eq(jobMatches.id, id)).get();
   }
 
   getSeekerMatches(seekerId: number): JobMatch[] {
-    return db.select().from(jobMatches)
-      .where(eq(jobMatches.seekerId, seekerId))
-      .all();
+    return db.select().from(jobMatches).where(eq(jobMatches.seekerId, seekerId)).all();
   }
 
   getJobMatches(jobId: number): JobMatch[] {
-    return db.select().from(jobMatches)
-      .where(eq(jobMatches.jobId, jobId))
-      .all();
+    return db.select().from(jobMatches).where(eq(jobMatches.jobId, jobId)).all();
   }
 
   createMatch(insertMatch: InsertJobMatch): JobMatch {
@@ -222,7 +253,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Stats
-  getStats(): { totalSeekers: number; totalEmployers: number; totalJobs: number; totalMatches: number; avgFitScore: number } {
+  getStats() {
     const allSeekers = db.select().from(users).where(eq(users.role, "pwd_seeker")).all();
     const allEmployers = db.select().from(users).where(eq(users.role, "employer")).all();
     const allJobs = db.select().from(jobs).all();

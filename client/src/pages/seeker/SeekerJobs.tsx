@@ -1,17 +1,35 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useAuth } from "@/contexts/AuthContext";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import {
   Search, MapPin, Building2, Briefcase, Clock, ChevronDown,
-  ChevronUp, Star, Filter, RefreshCw,
+  ChevronUp, Star, RefreshCw, Brain, CheckCircle2, XCircle,
+  AlertTriangle, ArrowRight, ArrowLeft, Award,
 } from "lucide-react";
+
+interface AssessmentQuestion {
+  question: string;
+  options: string[];
+}
+
+interface JobAssessmentData {
+  alreadyTaken: boolean;
+  timer: number;
+  passingScore: number;
+  questions?: AssessmentQuestion[];
+  // if alreadyTaken:
+  score?: number;
+  passed?: boolean;
+  totalQuestions?: number;
+}
 
 interface Job {
   id: number;
@@ -24,6 +42,7 @@ interface Job {
   requiredSkills: string[];
   salary?: string;
   isActive: boolean;
+  hasAssessment: boolean;
 }
 
 interface JobMatch {
@@ -46,12 +65,319 @@ const typeColors: Record<string, string> = {
   freelance: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
 };
 
+// ─── Assessment Modal ─────────────────────────────────────────────────────────
+
+interface AssessmentModalProps {
+  job: Job;
+  userId: number;
+  onClose: () => void;
+  onPassed: () => void;
+}
+
+function AssessmentModal({ job, userId, onClose, onPassed }: AssessmentModalProps) {
+  const { toast } = useToast();
+  const [currentQ, setCurrentQ] = useState(0);
+  const [answers, setAnswers] = useState<(number | null)[]>([]);
+  const [submitted, setSubmitted] = useState(false);
+  const [result, setResult] = useState<{ score: number; passed: boolean; passingScore: number; correct: number; totalQuestions: number } | null>(null);
+  const [timeLeft, setTimeLeft] = useState<number | null>(null);
+
+  const { data: assessmentData, isLoading } = useQuery<JobAssessmentData>({
+    queryKey: ["/api/jobs", job.id, "assessment", userId],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/jobs/${job.id}/assessment`);
+      if (!res.ok) throw new Error("Failed to load assessment");
+      return res.json();
+    },
+  });
+
+  // Initialize answers + timer once data loads
+  useEffect(() => {
+    if (assessmentData && !assessmentData.alreadyTaken && assessmentData.questions) {
+      setAnswers(new Array(assessmentData.questions.length).fill(null));
+      setTimeLeft(assessmentData.timer);
+    }
+  }, [assessmentData]);
+
+  const submitMutation = useMutation({
+    mutationFn: async (finalAnswers: (number | null)[]) => {
+      const res = await apiRequest("POST", `/api/jobs/${job.id}/assessment-result`, {
+        seekerId: userId,
+        answers: finalAnswers.map((a) => (a === null ? -1 : a)),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Submission failed");
+      }
+      return res.json();
+    },
+    onSuccess: (data) => {
+      setResult(data);
+      setSubmitted(true);
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", job.id, "assessment", userId] });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const handleSubmit = useCallback((finalAnswers?: (number | null)[]) => {
+    if (submitted) return;
+    submitMutation.mutate(finalAnswers ?? answers);
+  }, [submitted, answers]);
+
+  // Countdown timer
+  useEffect(() => {
+    if (timeLeft === null || submitted) return;
+    if (timeLeft <= 0) { handleSubmit(); return; }
+    const t = setTimeout(() => setTimeLeft((s) => (s !== null ? s - 1 : s)), 1000);
+    return () => clearTimeout(t);
+  }, [timeLeft, submitted]);
+
+  const formatTime = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+
+  const selectAnswer = (idx: number) => {
+    if (submitted) return;
+    const updated = [...answers];
+    updated[currentQ] = idx;
+    setAnswers(updated);
+  };
+
+  // ── Already taken ──
+  if (assessmentData?.alreadyTaken) {
+    return (
+      <ModalShell onClose={onClose}>
+        <div className="text-center space-y-4 py-4">
+          <div className={`w-16 h-16 rounded-full mx-auto flex items-center justify-center ${
+            assessmentData.passed ? "bg-green-100 dark:bg-green-900/30" : "bg-red-100 dark:bg-red-900/30"
+          }`}>
+            {assessmentData.passed
+              ? <Award size={32} className="text-green-600 dark:text-green-400" />
+              : <XCircle size={32} className="text-red-600 dark:text-red-400" />}
+          </div>
+          <h3 className="text-lg font-semibold text-foreground">
+            {assessmentData.passed ? "Assessment Passed!" : "Assessment Not Passed"}
+          </h3>
+          <p className="text-sm text-muted-foreground">
+            You scored <span className="font-bold text-foreground">{assessmentData.score}%</span>. Passing score is {assessmentData.passingScore}%.
+          </p>
+          {assessmentData.passed ? (
+            <div className="space-y-3">
+              <p className="text-sm text-green-700 dark:text-green-400">You can express interest in this job.</p>
+              <div className="flex gap-2 justify-center">
+                <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
+                <Button size="sm" onClick={onPassed}>Express Interest</Button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-sm text-muted-foreground">You may not re-take this assessment.</p>
+              <Button variant="outline" size="sm" onClick={onClose}>Close</Button>
+            </div>
+          )}
+        </div>
+      </ModalShell>
+    );
+  }
+
+  // ── Result screen ──
+  if (submitted && result) {
+    return (
+      <ModalShell onClose={onClose}>
+        <div className="text-center space-y-4 py-4">
+          <div className={`w-16 h-16 rounded-full mx-auto flex items-center justify-center ${
+            result.passed ? "bg-green-100 dark:bg-green-900/30" : "bg-red-100 dark:bg-red-900/30"
+          }`}>
+            {result.passed
+              ? <Award size={32} className="text-green-600 dark:text-green-400" />
+              : <XCircle size={32} className="text-red-600 dark:text-red-400" />}
+          </div>
+          <h3 className="text-lg font-semibold text-foreground">
+            {result.passed ? "You Passed! 🎉" : "Not Passed"}
+          </h3>
+          <div className="bg-muted/40 rounded-xl p-4 space-y-1 text-sm">
+            <p>Score: <span className="font-bold text-foreground">{result.score}%</span></p>
+            <p>Correct: <span className="font-bold text-foreground">{result.correct} / {result.totalQuestions}</span></p>
+            <p>Passing Score: <span className="font-bold text-foreground">{result.passingScore}%</span></p>
+          </div>
+          {result.passed ? (
+            <div className="space-y-3">
+              <p className="text-sm text-green-700 dark:text-green-400 font-medium">You qualify! You can now express interest in this job.</p>
+              <div className="flex gap-2 justify-center">
+                <Button variant="outline" size="sm" onClick={onClose}>Later</Button>
+                <Button size="sm" className="gap-1" onClick={onPassed}>
+                  Express Interest <ArrowRight size={14} />
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-sm text-muted-foreground">You did not meet the required passing score. You may not re-take this assessment.</p>
+              <Button variant="outline" size="sm" onClick={onClose}>Close</Button>
+            </div>
+          )}
+        </div>
+      </ModalShell>
+    );
+  }
+
+  // ── Loading ──
+  if (isLoading || !assessmentData || !assessmentData.questions) {
+    return (
+      <ModalShell onClose={onClose}>
+        <div className="space-y-3 py-4">
+          <Skeleton className="h-4 w-3/4" />
+          <Skeleton className="h-3 w-full" />
+          <Skeleton className="h-3 w-5/6" />
+        </div>
+      </ModalShell>
+    );
+  }
+
+  const questions = assessmentData.questions;
+  const q = questions[currentQ];
+  const answered = answers.filter((a) => a !== null).length;
+  const progress = Math.round((answered / questions.length) * 100);
+  const isLast = currentQ === questions.length - 1;
+
+  // ── Quiz ──
+  return (
+    <ModalShell onClose={onClose}>
+      {/* Header */}
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide flex items-center gap-1.5">
+            <Brain size={12} aria-hidden="true" /> Skill Assessment
+          </p>
+          <h3 className="text-sm font-semibold text-foreground mt-0.5">{job.title}</h3>
+        </div>
+        {timeLeft !== null && (
+          <div className={`flex items-center gap-1.5 text-sm font-mono font-semibold px-3 py-1.5 rounded-lg ${
+            timeLeft <= 60 ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400" : "bg-muted text-foreground"
+          }`} aria-label={`Time remaining: ${formatTime(timeLeft)}`} aria-live="off">
+            <Clock size={13} aria-hidden="true" />
+            {formatTime(timeLeft)}
+          </div>
+        )}
+      </div>
+
+      {/* Progress */}
+      <div className="mb-4">
+        <div className="flex justify-between text-xs text-muted-foreground mb-1.5">
+          <span>Question {currentQ + 1} of {questions.length}</span>
+          <span>{answered} answered</span>
+        </div>
+        <Progress value={progress} className="h-1.5" aria-label={`${progress}% of questions answered`} />
+      </div>
+
+      {/* Question */}
+      <div className="mb-4">
+        <p className="text-sm font-medium text-foreground leading-relaxed" id={`question-text-${currentQ}`}>
+          {q.question}
+        </p>
+      </div>
+
+      {/* Options */}
+      <div className="space-y-2 mb-6" role="radiogroup" aria-labelledby={`question-text-${currentQ}`}>
+        {q.options.map((opt, oi) => (
+          <button
+            key={oi}
+            type="button"
+            role="radio"
+            aria-checked={answers[currentQ] === oi}
+            onClick={() => selectAnswer(oi)}
+            data-testid={`option-${currentQ}-${oi}`}
+            className={`w-full text-left px-4 py-3 rounded-xl border text-sm transition-all ${
+              answers[currentQ] === oi
+                ? "border-primary bg-primary/10 text-primary font-medium"
+                : "border-border bg-background text-foreground hover:border-primary/40 hover:bg-muted/40"
+            }`}
+          >
+            <span className="font-semibold mr-2 text-xs text-muted-foreground">
+              {String.fromCharCode(65 + oi)}.
+            </span>
+            {opt}
+          </button>
+        ))}
+      </div>
+
+      {/* Navigation */}
+      <div className="flex items-center justify-between">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setCurrentQ((q) => Math.max(0, q - 1))}
+          disabled={currentQ === 0}
+          className="gap-1"
+          aria-label="Previous question"
+        >
+          <ArrowLeft size={14} aria-hidden="true" /> Prev
+        </Button>
+
+        {isLast ? (
+          <Button
+            size="sm"
+            onClick={() => handleSubmit()}
+            disabled={submitMutation.isPending}
+            className="gap-1"
+            aria-label="Submit assessment"
+            data-testid="button-submit-assessment"
+          >
+            {submitMutation.isPending ? (
+              <span className="animate-spin rounded-full h-3 w-3 border-2 border-current border-t-transparent" aria-hidden="true" />
+            ) : (
+              <CheckCircle2 size={14} aria-hidden="true" />
+            )}
+            Submit
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            onClick={() => setCurrentQ((q) => Math.min(questions.length - 1, q + 1))}
+            className="gap-1"
+            aria-label="Next question"
+          >
+            Next <ArrowRight size={14} aria-hidden="true" />
+          </Button>
+        )}
+      </div>
+
+      {/* Unanswered warning */}
+      {isLast && answers.some((a) => a === null) && (
+        <p className="mt-3 text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1.5" role="alert">
+          <AlertTriangle size={12} aria-hidden="true" />
+          {answers.filter((a) => a === null).length} question(s) unanswered. You can still submit.
+        </p>
+      )}
+    </ModalShell>
+  );
+}
+
+function ModalShell({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Skill Assessment"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="bg-card border border-border rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-6">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ─── Main Page ────────────────────────────────────────────────────────────────
+
 export default function SeekerJobs() {
   const { user } = useAuth();
   const { toast } = useToast();
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
   const [expandedJobId, setExpandedJobId] = useState<number | null>(null);
+  const [assessmentJobId, setAssessmentJobId] = useState<number | null>(null);
 
   const { data: jobs, isLoading: jobsLoading } = useQuery<Job[]>({
     queryKey: ["/api/jobs"],
@@ -65,8 +391,7 @@ export default function SeekerJobs() {
     queryKey: ["/api/matches/seeker", user?.id],
     queryFn: async () => {
       const res = await apiRequest("GET", `/api/matches/seeker/${user?.id}`);
-      const data = await res.json();
-      return data;
+      return res.json();
     },
     enabled: !!user?.id,
   });
@@ -78,10 +403,7 @@ export default function SeekerJobs() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/matches/seeker", user?.id] });
-      toast({
-        title: "Matches Generated",
-        description: `Found ${data.matches} job matches for you.`,
-      });
+      toast({ title: "Matches Generated", description: `Found ${data.matches} job matches for you.` });
     },
   });
 
@@ -92,7 +414,7 @@ export default function SeekerJobs() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/matches/seeker", user?.id] });
-      toast({ title: "Status updated!" });
+      toast({ title: "Interest expressed!", description: "The employer can now see your profile." });
     },
   });
 
@@ -101,11 +423,7 @@ export default function SeekerJobs() {
 
   const filteredJobs = (jobs || []).filter((j) => {
     const q = search.toLowerCase();
-    const matchesSearch =
-      !q ||
-      j.title.toLowerCase().includes(q) ||
-      j.company.toLowerCase().includes(q) ||
-      j.requiredSkills.some((s) => s.toLowerCase().includes(q));
+    const matchesSearch = !q || j.title.toLowerCase().includes(q) || j.company.toLowerCase().includes(q) || j.requiredSkills.some((s) => s.toLowerCase().includes(q));
     const matchesType = !typeFilter || j.type === typeFilter;
     return matchesSearch && matchesType;
   });
@@ -116,8 +434,38 @@ export default function SeekerJobs() {
     return scoreB - scoreA;
   });
 
+  const assessmentJob = assessmentJobId !== null ? (jobs || []).find((j) => j.id === assessmentJobId) ?? null : null;
+
+  const handleExpressInterest = (job: Job, match: JobMatch) => {
+    if (job.hasAssessment) {
+      // Open assessment modal first — express interest happens AFTER passing
+      setAssessmentJobId(job.id);
+    } else {
+      expressInterestMutation.mutate({ matchId: match.id, status: "accepted" });
+    }
+  };
+
+  const handleAssessmentPassed = (match: JobMatch) => {
+    setAssessmentJobId(null);
+    expressInterestMutation.mutate({ matchId: match.id, status: "accepted" });
+  };
+
   return (
     <DashboardLayout title="Browse Jobs">
+      {/* Assessment Modal */}
+      {assessmentJob && user && (
+        <AssessmentModal
+          job={assessmentJob}
+          userId={user.id}
+          onClose={() => setAssessmentJobId(null)}
+          onPassed={() => {
+            const match = matchMap.get(assessmentJob.id);
+            if (match) handleAssessmentPassed(match);
+            else setAssessmentJobId(null);
+          }}
+        />
+      )}
+
       <div className="max-w-4xl mx-auto space-y-6">
         {/* Search & Filter Bar */}
         <div className="flex flex-col sm:flex-row gap-3">
@@ -134,39 +482,13 @@ export default function SeekerJobs() {
             />
           </div>
           <div className="flex gap-2" role="group" aria-label="Filter by job type">
-            <Button
-              variant={typeFilter === "" ? "default" : "outline"}
-              size="sm"
-              onClick={() => setTypeFilter("")}
-              className="text-xs"
-              data-testid="button-filter-all"
-            >
-              All
-            </Button>
+            <Button variant={typeFilter === "" ? "default" : "outline"} size="sm" onClick={() => setTypeFilter("")} className="text-xs" data-testid="button-filter-all">All</Button>
             {Object.entries(typeLabels).map(([val, label]) => (
-              <Button
-                key={val}
-                variant={typeFilter === val ? "default" : "outline"}
-                size="sm"
-                onClick={() => setTypeFilter(val === typeFilter ? "" : val)}
-                className="text-xs"
-                data-testid={`button-filter-${val}`}
-              >
-                {label}
-              </Button>
+              <Button key={val} variant={typeFilter === val ? "default" : "outline"} size="sm" onClick={() => setTypeFilter(val === typeFilter ? "" : val)} className="text-xs" data-testid={`button-filter-${val}`}>{label}</Button>
             ))}
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => generateMatchesMutation.mutate()}
-            disabled={generateMatchesMutation.isPending}
-            className="gap-2 text-xs"
-            data-testid="button-regenerate-matches"
-            aria-label="Regenerate job matches based on your current profile"
-          >
-            <RefreshCw size={14} className={generateMatchesMutation.isPending ? "animate-spin" : ""} aria-hidden="true" />
-            Refresh Matches
+          <Button variant="outline" size="sm" onClick={() => generateMatchesMutation.mutate()} disabled={generateMatchesMutation.isPending} className="gap-2 text-xs" data-testid="button-regenerate-matches" aria-label="Regenerate job matches">
+            <RefreshCw size={14} className={generateMatchesMutation.isPending ? "animate-spin" : ""} aria-hidden="true" /> Refresh Matches
           </Button>
         </div>
 
@@ -178,8 +500,7 @@ export default function SeekerJobs() {
           </p>
           {matches && matches.length > 0 && (
             <p className="text-xs text-muted-foreground">
-              <Star size={12} className="inline mr-1 text-primary" aria-hidden="true" />
-              Sorted by fit score
+              <Star size={12} className="inline mr-1 text-primary" aria-hidden="true" /> Sorted by fit score
             </p>
           )}
         </div>
@@ -219,17 +540,13 @@ export default function SeekerJobs() {
                       <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
                         <div className="min-w-0 flex-1">
                           <div className="flex items-start gap-2 flex-wrap">
-                            <h3 className="font-semibold text-foreground text-base leading-tight">
-                              {job.title}
-                            </h3>
+                            <h3 className="font-semibold text-foreground text-base leading-tight">{job.title}</h3>
                             {match && (
                               <span
                                 className={`text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0 ${
-                                  match.fitScore >= 75
-                                    ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
-                                    : match.fitScore >= 50
-                                    ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
-                                    : "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400"
+                                  match.fitScore >= 75 ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                                  : match.fitScore >= 50 ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
+                                  : "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400"
                                 }`}
                                 aria-label={`Fit score: ${match.fitScore}%`}
                                 data-testid={`text-fit-score-${job.id}`}
@@ -237,45 +554,41 @@ export default function SeekerJobs() {
                                 {match.fitScore}% Match
                               </span>
                             )}
+                            {job.hasAssessment && (
+                              <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-400 flex-shrink-0" aria-label="This job requires a skill assessment">
+                                <Brain size={10} aria-hidden="true" /> Assessment Required
+                              </span>
+                            )}
                           </div>
                           <div className="flex items-center gap-3 mt-1.5 text-xs text-muted-foreground flex-wrap">
-                            <span className="flex items-center gap-1">
-                              <Building2 size={11} aria-hidden="true" /> {job.company}
-                            </span>
-                            <span className="flex items-center gap-1">
-                              <MapPin size={11} aria-hidden="true" /> {job.location}
-                            </span>
+                            <span className="flex items-center gap-1"><Building2 size={11} aria-hidden="true" /> {job.company}</span>
+                            <span className="flex items-center gap-1"><MapPin size={11} aria-hidden="true" /> {job.location}</span>
                             <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${typeColors[job.type] || "bg-muted text-muted-foreground"}`}>
                               {typeLabels[job.type] || job.type}
                             </span>
                           </div>
-                          {job.salary && (
-                            <p className="text-xs font-medium text-foreground mt-1.5">{job.salary}</p>
-                          )}
+                          {job.salary && <p className="text-xs font-medium text-foreground mt-1.5">{job.salary}</p>}
                         </div>
 
                         <div className="flex gap-2 flex-shrink-0">
                           {match ? (
                             match.status === "accepted" ? (
-                              <Badge className="bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 border-0 text-xs">
-                                Interested ✓
-                              </Badge>
+                              <Badge className="bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 border-0 text-xs">Interested ✓</Badge>
                             ) : (
                               <Button
                                 size="sm"
-                                className="h-8 text-xs"
-                                onClick={() => expressInterestMutation.mutate({ matchId: match.id, status: "accepted" })}
+                                className="h-8 text-xs gap-1.5"
+                                onClick={() => handleExpressInterest(job, match)}
                                 disabled={expressInterestMutation.isPending}
                                 data-testid={`button-express-interest-${job.id}`}
-                                aria-label={`Express interest in ${job.title}`}
+                                aria-label={job.hasAssessment ? `Take assessment for ${job.title}` : `Express interest in ${job.title}`}
                               >
-                                Express Interest
+                                {job.hasAssessment && <Brain size={12} aria-hidden="true" />}
+                                {job.hasAssessment ? "Take Assessment" : "Express Interest"}
                               </Button>
                             )
                           ) : (
-                            <Badge variant="outline" className="text-xs text-muted-foreground">
-                              No match data
-                            </Badge>
+                            <Badge variant="outline" className="text-xs text-muted-foreground">No match data</Badge>
                           )}
                           <Button
                             variant="ghost"
@@ -297,52 +610,38 @@ export default function SeekerJobs() {
                         {job.requiredSkills.slice(0, 5).map((skill) => {
                           const isMatched = match?.matchedSkills.includes(skill);
                           return (
-                            <Badge
-                              key={skill}
-                              variant="secondary"
-                              className={`text-[10px] border-0 px-2 ${
-                                isMatched
-                                  ? "bg-primary/10 text-primary"
-                                  : "bg-muted text-muted-foreground"
-                              }`}
-                              title={isMatched ? "You have this skill!" : undefined}
-                            >
-                              {isMatched && <span className="mr-0.5" aria-hidden="true">✓</span>}
-                              {skill}
+                            <Badge key={skill} variant="secondary" className={`text-[10px] border-0 px-2 ${isMatched ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"}`} title={isMatched ? "You have this skill!" : undefined}>
+                              {isMatched && <span className="mr-0.5" aria-hidden="true">✓</span>}{skill}
                             </Badge>
                           );
                         })}
                         {job.requiredSkills.length > 5 && (
-                          <Badge variant="secondary" className="text-[10px] border-0 px-2">
-                            +{job.requiredSkills.length - 5} more
-                          </Badge>
+                          <Badge variant="secondary" className="text-[10px] border-0 px-2">+{job.requiredSkills.length - 5} more</Badge>
                         )}
                       </div>
                     </div>
 
                     {/* Expanded Details */}
                     {isExpanded && (
-                      <div
-                        id={`job-details-${job.id}`}
-                        className="border-t border-border/60 px-5 py-4 bg-muted/20"
-                      >
+                      <div id={`job-details-${job.id}`} className="border-t border-border/60 px-5 py-4 bg-muted/20">
                         <h4 className="text-sm font-semibold text-foreground mb-2">Job Description</h4>
-                        <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-wrap">
-                          {job.description}
-                        </p>
+                        <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-wrap">{job.description}</p>
+                        {job.hasAssessment && (
+                          <div className="mt-4 bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-800 rounded-xl p-3">
+                            <p className="text-xs font-semibold text-violet-700 dark:text-violet-400 flex items-center gap-1.5 mb-1">
+                              <Brain size={12} aria-hidden="true" /> Skill Assessment Required
+                            </p>
+                            <p className="text-xs text-violet-600 dark:text-violet-400/80">
+                              The employer requires you to complete a skill assessment quiz before expressing interest. You can only take it once.
+                            </p>
+                          </div>
+                        )}
                         {match && match.matchedSkills.length > 0 && (
                           <div className="mt-4">
-                            <h4 className="text-sm font-semibold text-foreground mb-2">
-                              Your Matched Skills ({match.matchedSkills.length}/{job.requiredSkills.length})
-                            </h4>
+                            <h4 className="text-sm font-semibold text-foreground mb-2">Your Matched Skills ({match.matchedSkills.length}/{job.requiredSkills.length})</h4>
                             <div className="flex flex-wrap gap-1.5">
                               {match.matchedSkills.map((skill) => (
-                                <Badge
-                                  key={skill}
-                                  className="bg-primary/10 text-primary border-0 text-xs"
-                                >
-                                  ✓ {skill}
-                                </Badge>
+                                <Badge key={skill} className="bg-primary/10 text-primary border-0 text-xs">✓ {skill}</Badge>
                               ))}
                             </div>
                           </div>
